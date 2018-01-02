@@ -13,7 +13,7 @@ class WEN():
     
     def __init__(self, l1= 0.5, l2= 0.5, weight =  None,
                  step_size = 1e-3, max_iter = 50, 
-                 tol= 1e-5, random_state = 0):
+                 tol= 1e-3, random_state = 0):
         '''
         Args:
             l1 (float): A float between 0 and 1 for lasso regularization
@@ -89,10 +89,9 @@ class WEN():
             self._calculate_num_features(X)
         if (self._min_peak is None) or (self._max_peak is None):
             self._calculate_peaks(X)
-        ranges = (self._max_peak - self._min_peak).reshape(self._num_features,
-                 1)
-        self._coeff = ranges*np.random.random(size = (self._num_features, 1)) \
-            + self._min_peak.reshape(self._num_features, 1)
+        ranges = (self._max_peak - self._min_peak)
+        self._coeff = ranges*np.random.random(self._num_features) \
+            + self._min_peak
     
     def _initialize_weight(self, X):
         '''
@@ -119,20 +118,20 @@ class WEN():
         if iters > self._max_iter:
             return True
         else:
-            return np.linalg.norm(gradient)/self._num_features < self._tol
+            return (np.linalg.norm(gradient)/self._num_features) < self._tol
         
-    def _OLS_coeff(self, X, y):
-        '''
-        Args:
-            X (array): A matrix that contians data
-            y (array): A array that contains labels
-            
-        Returns: 
-            array: a array with the same size of self._coeff
-        '''
-        y = np.array(y).reshape(self._num_observations, 1)
-        X = np.array(X)
-        return np.linalg.inv(np.transpose(X)@X)@np.transpose(X)@y
+#    def _OLS_coeff(self, X, y):
+#        '''
+#        Args:
+#            X (array): A matrix that contians data
+#            y (array): A array that contains labels
+#            
+#        Returns: 
+#            array: a array with the same size of self._coeff
+#        '''
+#        y = np.array(y).reshape(self._num_observations, 1)
+#        X = np.array(X)
+#        return np.linalg.inv(np.transpose(X)@X)@np.transpose(X)@y
         
     def _calculate_gradient(self, X, y):
         '''
@@ -148,18 +147,23 @@ class WEN():
             self._calculate_num_observations(X)
         if self._num_features is None:
             self._calculate_num_features(X)
+        if self._weight is None:
+            self._initialize_weight(X)
+        
         sub_derivative = self._subgradient_absfunction(self._coeff)
         
         def subgradient(x, X, y, W, l1, l2, num_observations, num_features,
                         sub_derivative):
+            x = x.reshape(num_features, 1)
             y = np.array(y).reshape(num_observations, 1)
             X = np.array(X)
             I = np.identity(self._num_features)
         
             g1 = 2*(np.transpose(X)@W@X + l2*I)@x/(1 + l2)
             g2 = -2*np.transpose(X)@W@y
-            g3 = l1*sub_derivative
-            return g1 + g2 + g3
+            g3 = l1*sub_derivative.reshape(num_features, 1)
+            
+            return (g1 + g2 + g3).flatten()
         
         self._gradient = partial(subgradient, X = X, y = y, W = self._weight,
                                  l1 = self._l1, l2 = self._l2, 
@@ -183,10 +187,9 @@ class WEN():
             self._calculate_num_features(X)
         if self._weight is None:
             self._initialize_weight(X)
-        if self._weight is None:
-            self._initialize_weight(X)
         
         def cost(x, X, y, W, l1, l2, num_observations, num_features):
+            x = x.reshape(num_features, 1)
             y = np.array(y).reshape(num_observations, 1)
             X = np.array(X)
             I = np.identity(num_features)
@@ -200,38 +203,47 @@ class WEN():
                              num_observations = self._num_observations, 
                              num_features = self._num_features)
     
-    def _calculate_coeff(self, X, y, step_size, gradient):
+    def _calculate_coeff(self, step_size, gradient):
         '''
         Args:
-            X (array): A matrix that contians data
-            y (array): A array that contains labels
+            step_size (float): The step size
+            gradient (array): A array 
             
         '''
         self._coeff = self._coeff - step_size*gradient
     
-    def _calculate_response(self, X):
-        '''
-        Args:
-            X (array): A matrix that contians data
-        '''
-        self._response = np.array(X)@self._coeff
-        
-        
-    def _calculate_weight(self, X, y):
-        '''
-        Args:
-            X (array): A matrix that contians data
-            y (array): A array that contains labels
-        '''
-        self._calculate_response(X)
-        y = np.array(y).reshape(self._num_observations, 1)
-        difference = 1/(y - self._response)**2
-        return np.diag(difference.flatten())
+#    def _calculate_response(self, X):
+#        '''
+#        Args:
+#            X (array): A matrix that contians data
+#        '''
+#        self._response = np.array(X)@self._coeff.reshape(self._num_features,1)
+                
+#    def _calculate_weight(self, X, y):
+#        '''
+#        Args:
+#            X (array): A matrix that contians data
+#            y (array): A array that contains labels
+#        '''
+#        self._calculate_response(X)
+#        y = np.array(y).reshape(self._num_observations, 1)
+#        difference = 1/(y - self._response)**2
+#        return np.diag(difference.flatten())
     
+    def _store_best_results(self, current_cost):
+        '''
+        Args:
+            current_cost (float): The calculated cost
+        '''
+        if (self._best_cost is None) or (current_cost < self._best_cost):
+            # assign the current cost and coeff to the best 
+            self._best_cost = current_cost
+            self._best_coeff = self._coeff
+        
     @staticmethod
     def _get_indicator(x):
         a = np.zeros_like(x)
-        a[np.random.randint(0, x.shape[0]),0]= 1
+        a[np.random.randint(0, x.shape[0])]= 1
         return a
         
     @staticmethod
@@ -262,24 +274,40 @@ class WEN():
             iters += 1
             
             # update the coeff
-            self._calculate_coeff(X, y, self._step_size, 
-                                  self._gradient(self._coeff))
+            self._calculate_coeff(self._step_size, self._gradient(self._coeff))
             current_cost = self._cost(self._coeff)
+            # store the current results if it is better than the stored best            
+            self._store_best_results(current_cost)
+            print(iters, self._best_cost, np.linalg.norm(self._gradient(self._coeff))/self._num_features)
             
-            if self._best_cost is None:
-                # assign the current cost and coeff to the best 
-                self._best_cost = current_cost
-                self._best_coeff = self._coeff
-            else:
-                # test if the current coeff is better than the best or not
-                if current_cost < self._best_cost:
-                    self._best_cost = current_cost
-                    self._best_coeff = self._coeff
-             
-            print(iters, self._best_cost)
-
+    def fit_CD(self, X, y):
+        import scipy as sp
+        from functools import partial
+                
+        iters = 0
+        self._initialize_coeff(X)
+        self._calculate_cost(X, y)
+        self._calculate_gradient(X, y)
+        
+        while not self._should_stop(self._gradient(self._coeff), iters):
+            iters += 1
+            # determine the position and direction for line search
+            xk = self._coeff.flatten()
+            pk = self._get_indicator(self._coeff)*self._gradient(self._coeff)
+            # define a line search function to minimize
+            def cost(alpha, xk, pk):
+                return self._cost(xk-alpha*pk)
+            # minimization
+            res = sp.optimize.minimize_scalar(partial(cost, xk = xk, pk=pk))
+            # update the coeff
+            self._calculate_coeff(res.x, pk)
+            current_cost = self._cost(self._coeff)
+            # store the best 
+            self._store_best_results(current_cost)
+            print(iters, res.x, self._best_cost, np.linalg.norm(self._gradient(self._coeff))/self._num_features)
+            
+            
 if __name__ == "__main__":
-    import numpy as np
     import pandas as pd
     
     df = pd.read_csv('Boston.csv')
@@ -303,4 +331,5 @@ if __name__ == "__main__":
                                                         random_state=0)
     
     net1 = WEN(step_size = 1e-3, max_iter = 5000, random_state=0)
-    net1.fit(X_train, y_train)
+    net1.fit_CD(X_train, y_train)
+        
