@@ -13,7 +13,7 @@ class WEN():
     
     def __init__(self, l1= 0.5, l2= 0.5, weight =  None,
                  step_size = 1e-3, max_iter = 50, 
-                 tol= 1e-4, random_state = 0):
+                 tol= 1e-5, random_state = 0):
         '''
         Args:
             l1 (float): A float between 0 and 1 for lasso regularization
@@ -27,21 +27,26 @@ class WEN():
             
         Returns: None
         '''
+        # assign the parameters
         self._weight = weight
         self._max_iter = max_iter
         self._step_size = step_size
         self._tol = tol
         self._random_state = random_state
+        self._l1 = l1
+        self._l2 = l2
+        
+        # initize other parameters
         self._coeff = None
         self._num_observations = None
         self._num_features = None
         self._max_peak = None
         self._min_peak = None
-        self._l1 = l1
-        self._l2 = l2
         self._gradient = None
         self._cost = None
         self._response = None
+        self._best_cost = None
+        self._best_coeff = None
                 
     def _calculate_num_observations(self, X):
         '''
@@ -84,7 +89,8 @@ class WEN():
             self._calculate_num_features(X)
         if (self._min_peak is None) or (self._max_peak is None):
             self._calculate_peaks(X)
-        ranges = (self._max_peak - self._min_peak).reshape(self._num_features,1)
+        ranges = (self._max_peak - self._min_peak).reshape(self._num_features,
+                 1)
         self._coeff = ranges*np.random.random(size = (self._num_features, 1)) \
             + self._min_peak.reshape(self._num_features, 1)
     
@@ -101,10 +107,10 @@ class WEN():
             self._weight = np.identity(self._num_observations)
             
         
-    def _should_stop(self, old_coeff, iters):
+    def _should_stop(self, gradient, iters):
         '''
         Args:
-            old_coeff (array): The old coefficients 
+            gradient (array): The current gradient
             iters: The number of iterations
         
         Returns:
@@ -113,11 +119,8 @@ class WEN():
         if iters > self._max_iter:
             return True
         else:
-            if old_coeff is None:
-                return False
-            else:
-                return (np.abs(old_coeff - self._coeff).sum() < self._tol)
-            
+            return np.linalg.norm(gradient)/self._num_features < self._tol
+        
     def _OLS_coeff(self, X, y):
         '''
         Args:
@@ -137,8 +140,7 @@ class WEN():
             X (array): A matrix that contians data
             y (array): A array that contains labels
             
-        Returns: 
-            array: a array with the same size of self._coeff
+        Returns: None
         '''
         from functools import partial
         
@@ -171,8 +173,7 @@ class WEN():
             X (array): A matrix that contians data
             y (array): A array that contains labels
             
-        Returns: 
-            float : a float represents the loss
+        Returns: None
         '''
         from functools import partial
         
@@ -199,14 +200,14 @@ class WEN():
                              num_observations = self._num_observations, 
                              num_features = self._num_features)
     
-    def _calculate_coeff(self, X, y, gradient):
+    def _calculate_coeff(self, X, y, step_size, gradient):
         '''
         Args:
             X (array): A matrix that contians data
             y (array): A array that contains labels
             
         '''
-        self._coeff = self._coeff - self._step_size*gradient
+        self._coeff = self._coeff - step_size*gradient
     
     def _calculate_response(self, X):
         '''
@@ -233,7 +234,6 @@ class WEN():
         a[np.random.randint(0, x.shape[0]),0]= 1
         return a
         
-        
     @staticmethod
     def _subgradient_absfunction(x):
         '''
@@ -254,33 +254,30 @@ class WEN():
     
         '''
         iters = 0
-        best_coeff = None
-        best_cost = None
-        old_coeff = None
-        old_cost = None
-                
         self._initialize_coeff(X)
         self._calculate_cost(X, y)
         self._calculate_gradient(X, y)
         
-        while not self._should_stop(old_coeff, iters):
+        while not self._should_stop(self._gradient(self._coeff), iters):
             iters += 1
-            # assign the old 
-            old_coeff = self._coeff
-            old_cost = self._cost(self._coeff)
             
-            self._calculate_coeff(X, y, self._gradient(self._coeff))
+            # update the coeff
+            self._calculate_coeff(X, y, self._step_size, 
+                                  self._gradient(self._coeff))
+            current_cost = self._cost(self._coeff)
             
-            if best_cost is None:
-                best_cost = self._cost(self._coeff)
-                best_coeff = self._coeff
+            if self._best_cost is None:
+                # assign the current cost and coeff to the best 
+                self._best_cost = current_cost
+                self._best_coeff = self._coeff
             else:
-                if self._cost(self._coeff) < best_cost:
-                    best_cost = self._cost(self._coeff)
-                    best_coeff = self._coeff
+                # test if the current coeff is better than the best or not
+                if current_cost < self._best_cost:
+                    self._best_cost = current_cost
+                    self._best_coeff = self._coeff
              
-            print(iters, old_cost, best_cost, np.max(self._weight))
-    
+            print(iters, self._best_cost)
+
 if __name__ == "__main__":
     import numpy as np
     import pandas as pd
