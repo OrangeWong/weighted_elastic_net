@@ -288,7 +288,13 @@ class WEN(BaseEstimator, RegressorMixin):
         X = check_array(X)
         X = self._preprocess_data(X)
         
-        return (np.array(X)@self._best_coeff.reshape(self._n_features,1)).flatten()
+        if self.fit_intercept:
+            coeff = np.append(self._intercept, 
+                              self._best_coeff).reshape(self._n_features,1)
+        else:
+            coeff = self._best_coeff.reshape(self._n_features,1)
+        
+        return (np.array(X)@coeff).flatten()
     
     def fit(self, X, y):
         '''
@@ -324,7 +330,7 @@ class WEN(BaseEstimator, RegressorMixin):
                 current_cost = self._cost(self._coeff)
                 # store the current results if it is better than the stored best            
                 self._store_best_results(current_cost)       
-                print(iters, current_cost, np.linalg.norm(self._gradient(self._coeff)))
+                #print(iters, current_cost, np.linalg.norm(self._gradient(self._coeff)))
             
         elif self.method == 'subgradient_descent':
             
@@ -337,8 +343,11 @@ class WEN(BaseEstimator, RegressorMixin):
             
                 # store the current results if it is better than the stored best            
                 self._store_best_results(current_cost)
-                print(iters, self._best_cost, np.linalg.norm(self._gradient(self._coeff)))
+                #print(iters, self._best_cost, np.linalg.norm(self._gradient(self._coeff)))
         
+        if self.fit_intercept:
+            self._intercept = self._best_coeff[0]
+            self._best_coeff = self._best_coeff[1:]
         # save the total number of iteration
         self._n_iter = iters
         return self
@@ -374,14 +383,15 @@ if __name__ == "__main__":
     y_predict_reg = reg.predict(X_train)
     weight = np.diag(1/(y_train - y_predict_reg)**2)
     
-    net1 = WEN(tol = 1e-3, step_size = 5e-4, max_iter = 5000, random_state=0,
-               fit_intercept=True, method = 'subgradient_descent')
+    net1 = WEN(step_size = 1e-4, max_iter = 1e4, 
+           l1 = 0.1, l2 = 0.1, tol= 1e-3, 
+           method = 'coordinate_descent')
     
     net1.fit(X_train, y_train)
     
-    print(net1._best_cost, net1._best_coeff)
 
+    print(net1._best_coeff, net1._intercept)
     
-    
+    print(np.append(net1._intercept, net1._best_coeff))
     
         
