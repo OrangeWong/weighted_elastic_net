@@ -6,7 +6,7 @@ Created on Tue Jan  2 11:59:23 2018
 """
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
+from sklearn.utils.validation import check_X_y, check_array
 
 class WEN(BaseEstimator, RegressorMixin):
     '''
@@ -14,18 +14,23 @@ class WEN(BaseEstimator, RegressorMixin):
     '''
     
     def __init__(self, l1= 0.5, l2= 0.5, weight =  None,
-                 step_size = 1e-3, max_iter = 50, 
-                 tol= 1e-3, random_state = 0):
+                 step_size = 1e-3, max_iter = 500, 
+                 tol= 1e-3, random_state = 0, fit_intercept = True,
+                 method = 'coordinate_descent'):
         '''
-        Args:
+        Parameters:
             l1 (float): A float between 0 and 1 for lasso regularization
             l2 (float): A float between 0 and 1 for riage regularization
             weight (array): A 2D weight with the suitable dimensions. Default 
-            is identify matrix
+                is identify matrix
             step_size (float): A float that determines the step size
             max_iter (int): The maximun number of iterations
             tol (float): The tolerlance for the solution
             random_state (int): The random state
+            fit_intercept (boolean): wthether to calculate the intercept for 
+                the model. Default True.
+            method (string): The string represents the method in optimization
+        Attributes:
             
         Returns: None
         '''
@@ -37,11 +42,13 @@ class WEN(BaseEstimator, RegressorMixin):
         self.random_state = random_state
         self.l1 = l1
         self.l2 = l2
+        self.fit_intercept = fit_intercept
+        self.method = method
         
         # initize other parameters
         self._coeff = None
-        self._num_observations = None
-        self._num_features = None
+        self._n_observations = None
+        self._n_features = None
         self._max_peak = None
         self._min_peak = None
         self._gradient = None
@@ -49,23 +56,57 @@ class WEN(BaseEstimator, RegressorMixin):
         self._best_cost = None
         self._best_coeff = None
     
-    def _calculate_num_observations(self, X):
+    @staticmethod
+    def _get_indicator(length):
+        '''
+        Args:
+            x (array): 
+        '''
+        indicator = np.zeros(length)
+        indicator[np.random.randint(0, length)] = 1
+        return indicator
+        
+    @staticmethod
+    def _subgradient_absfunction(x):
+        '''
+        Args:
+            x (array): The array represents the position
+            
+        Returns: 
+            array: a array represents the subderivative of abs function at x
+        '''
+        sub_derivative = (x != 0)*np.sign(x) # when component != 0
+        sub_derivative += (x == 0)*(2*np.random.random() - 1) # when component == 0
+        return sub_derivative  
+
+    @staticmethod
+    def _soft_thresholding(a, l):
+        if a > l:
+            return (a - l)
+        elif a < -l:
+            return a + l
+        else:
+            return 0
+        
+        
+        
+    def _calculate_n_observations(self, X):
         '''
         Args:
             X (array): A matrix that contains data
         
         Returns: None
         '''
-        self._num_observations = (np.array(X)).shape[0]
+        self._n_observations = X.shape[0]
         
-    def _calculate_num_features(self, X):
+    def _calculate_n_features(self, X):
         '''
         Args:
             X (array): A matrix that contains data
             
         Returns: None
         '''
-        self._num_features = (np.array(X)).shape[1]
+        self._n_features = X.shape[1]
     
     def _calculate_peaks(self, X):
         '''
@@ -74,8 +115,8 @@ class WEN(BaseEstimator, RegressorMixin):
             
         Returns: None
         '''
-        self._max_peak = np.max(np.array(X), axis = 0)
-        self._min_peak = np.min(np.array(X), axis = 0)
+        self._max_peak = np.max(X, axis = 0)
+        self._min_peak = np.min(X, axis = 0)
     
     def _initialize_coeff(self, X):
         '''
@@ -86,12 +127,12 @@ class WEN(BaseEstimator, RegressorMixin):
         '''
         np.random_state = self.random_state
         
-        if self._num_features is None:
-            self._calculate_num_features(X)
+        if self._n_features is None:
+            self._calculate_n_features(X)
         if (self._min_peak is None) or (self._max_peak is None):
             self._calculate_peaks(X)
         ranges = (self._max_peak - self._min_peak)
-        self._coeff = ranges*np.random.random(self._num_features) \
+        self._coeff = ranges*np.random.random(self._n_features) \
             + self._min_peak
     
     def _initialize_weight(self, X):
@@ -101,10 +142,10 @@ class WEN(BaseEstimator, RegressorMixin):
         
         Returns: None 
         '''
-        if self._num_observations is None:
-            self._calculate_num_observations(X)
         if self.weight is None:
-            self.weight = np.identity(self._num_observations)
+            if self._n_observations is None:
+                self._calculate_n_observations(X)
+            self.weight = np.identity(self._n_observations)
             
         
     def _should_stop(self, gradient, iters):
@@ -119,8 +160,29 @@ class WEN(BaseEstimator, RegressorMixin):
         if iters > self.max_iter:
             return True
         else:
-            return (np.linalg.norm(gradient)/self._num_features) < self.tol
+            # if the gradient fulfils this requirement == min
+            return np.linalg.norm(gradient) < \
+            np.linalg.norm(self.l1*np.ones(self._n_features)) + self.tol
+
+    def _calculate_k_coeff(self, X, y, k):
+        alpha_k = (np.asscalar( self._dual_matrix_y[k,:] \
+                              - self._dual_matrix_x[k,:]@self._coeff)\
+                  + self._dual_matrix_x[k,k]*self._coeff[k])\
+                  /self._dual_matrix_x[k,k]  
+        lambda_k = self.l1/self._dual_matrix_x[k,k]/2
+        return self._soft_thresholding(alpha_k, lambda_k)
+                
+    def _calculate_dual_matrix(self, X, y):
+        if self._n_features is None:
+            self._calculate_n_features(X)
+        if self.weight is None:
+            self._initialize_weight(X)
         
+        I = np.identity(self._n_features)
+        self._dual_matrix_x = (np.transpose(X)@self.weight@X + self.l2*I)\
+            /(1 + self.l2)
+        self._dual_matrix_y = (np.transpose(X)@self.weight@y).reshape(self._n_features, 1)
+                
     def _calculate_gradient(self, X, y):
         '''
         Args:
@@ -131,34 +193,22 @@ class WEN(BaseEstimator, RegressorMixin):
         '''
         from functools import partial
         
-        if self._num_observations is None:
-            self._calculate_num_observations(X)
-        if self._num_features is None:
-            self._calculate_num_features(X)
+        if self._n_observations is None:
+            self._calculate_n_observations(X)
+        if self._n_features is None:
+            self._calculate_n_features(X)
         if self.weight is None:
             self._initialize_weight(X)
         
-        sub_derivative = self._subgradient_absfunction(self._coeff)
-        
-        def subgradient(x, X, y, W, l1, l2, num_observations, num_features,
-                        sub_derivative):
-            
-            x = x.reshape(num_features, 1)
-            y = np.array(y).reshape(num_observations, 1)
-            X = np.array(X)
-            I = np.identity(self._num_features)
-            
-            g1 = 2*(np.transpose(X)@W@X + l2*I)@x/(1 + l2)
-            g2 = -2*np.transpose(X)@W@y
-            g3 = l1*sub_derivative.reshape(num_features, 1)
-            
-            return (g1 + g2 + g3).flatten()
+        def subgradient(x, X, y, W, l1, l2, n_observations, n_features):
+            x = x.reshape(n_features, 1)
+            y = y.reshape(n_observations, 1)
+            return (2*self._dual_matrix_x@x -2*self._dual_matrix_y).flatten()
         
         self._gradient = partial(subgradient, X = X, y = y, W = self.weight,
                                  l1 = self.l1, l2 = self.l2, 
-                                 num_observations = self._num_observations, 
-                                 num_features = self._num_features,
-                                 sub_derivative = sub_derivative)
+                                 n_observations = self._n_observations, 
+                                 n_features = self._n_features)
 
     def _calculate_cost(self, X, y):
         '''
@@ -170,27 +220,24 @@ class WEN(BaseEstimator, RegressorMixin):
         '''
         from functools import partial
         
-        if self._num_observations is None:
-            self._calculate_num_observations(X)
-        if self._num_features is None:
-            self._calculate_num_features(X)
+        if self._n_observations is None:
+            self._calculate_n_observations(X)
+        if self._n_features is None:
+            self._calculate_n_features(X)
         if self.weight is None:
             self._initialize_weight(X)
         
-        def cost(x, X, y, W, l1, l2, num_observations, num_features):
-            x = x.reshape(num_features, 1)
-            y = np.array(y).reshape(num_observations, 1)
-            X = np.array(X)
-            I = np.identity(num_features)
-            lf1 = np.transpose(x)@(np.transpose(X)@W@X + l2*I)/(1+ l2)@x
-            lf2 = -2*np.transpose(y)@W@X@x 
-            lf3 = l1*np.linalg.norm(x, ord=1)
-            return np.asscalar(lf1 + lf2)+ lf3
+        def cost(x, X, y, W, l1, l2, n_observations, n_features):
+            x = x.reshape(n_features, 1)
+            y = y.reshape(n_observations, 1)
+            lf1 = np.transpose(x)@self._dual_matrix_x@x
+            lf2 = -2*np.transpose(self._dual_matrix_y)@x
+            return np.asscalar(lf1 + lf2)+ l1*np.linalg.norm(x, ord=1)
         
         self._cost = partial(cost, X=X, y=y, W =self.weight, 
                              l1 = self.l1, l2=self.l2, 
-                             num_observations = self._num_observations, 
-                             num_features = self._num_features)
+                             n_observations = self._n_observations, 
+                             n_features = self._n_features)
     
     def _calculate_coeff(self, step_size, gradient):
         '''
@@ -223,38 +270,26 @@ class WEN(BaseEstimator, RegressorMixin):
             self._best_cost = current_cost
             self._best_coeff = self._coeff
         
-    @staticmethod
-    def _get_indicator(x):
-        a = np.zeros_like(x)
-        a[np.random.randint(0, x.shape[0])]= 1
-        return a
+    def _preprocess_data(self, X):
+        if self.fit_intercept:
+            X = np.hstack( (np.ones((X.shape[0],1)), X ))
+        self._calculate_n_features(X)
+        return X
         
-    @staticmethod
-    def _subgradient_absfunction(x):
-        '''
-        Args: None
-            
-        Returns: 
-            array: a array with the same size of self._coeff
-        '''
-        sub_derivative = (x != 0)*np.sign(x) # when component != 0
-        sub_derivative += (x == 0)*(2*np.random.random() - 1) # when component == 0
-        return sub_derivative  
-    
     def predict(self, X):
         '''
         Args:
             X (array): A matrix that contians data
         '''
         # check is fit had been called
-        check_is_fitted(self, ['X_', 'y_'])
+        #check_is_fitted(self, ['X_', 'y_'])
         
         # check X array
         X = check_array(X)
+        X = self._preprocess_data(X)
         
-        return (np.array(X)@self._coeff.reshape(self._num_features,1)).flatten()
+        return (np.array(X)@self._best_coeff.reshape(self._n_features,1)).flatten()
     
-        
     def fit(self, X, y):
         '''
         Args:
@@ -265,55 +300,49 @@ class WEN(BaseEstimator, RegressorMixin):
             self: object
                 
         '''
+        
         # check that X and y have correct shape
         X, y = check_X_y(X, y)
-        self.X_ = X
-        self.y_ = y
+        X = self._preprocess_data(X)
+        self._calculate_dual_matrix(X,y)
         
-        iters = 0
-        self._initialize_coeff(self.X_)
-        self._calculate_cost(self.X_, self.y_)
-        self._calculate_gradient(self.X_, self.y_)
-        
-        while not self._should_stop(self._gradient(self._coeff), iters):
-            iters += 1
-            
-            # update the coeff
-            self._calculate_coeff(self.step_size, self._gradient(self._coeff))
-            current_cost = self._cost(self._coeff)
-            # store the current results if it is better than the stored best            
-            self._store_best_results(current_cost)
-            #print(iters, self._best_cost, np.linalg.norm(self._gradient(self._coeff))/self._num_features)
-        
-        return self
-    
-    def fit_CD(self, X, y):
-        import scipy as sp
-        from functools import partial
-                
         iters = 0
         self._initialize_coeff(X)
         self._calculate_cost(X, y)
         self._calculate_gradient(X, y)
         
-        while not self._should_stop(self._gradient(self._coeff), iters):
-            iters += 1
-            # determine the position and direction for line search
-            xk = self._coeff.flatten()
-            pk = self._get_indicator(self._coeff)*self._gradient(self._coeff)
-            # define a line search function to minimize
-            def cost(alpha, xk, pk):
-                return self._cost(xk-alpha*pk)
-            # minimization
-            res = sp.optimize.minimize_scalar(partial(cost, xk = xk, pk=pk))
-            # update the coeff
-            self._calculate_coeff(res.x, pk)
-            current_cost = self._cost(self._coeff)
-            # store the best 
-            self._store_best_results(current_cost)
-            #print(iters, res.x, self._best_cost, np.linalg.norm(self._gradient(self._coeff))/self._num_features)
+        
+        if self.method == 'coordinate_descent':
+        
+            while not self._should_stop(self._gradient(self._coeff), iters):
+                iters += 1
+                # cyclic coordinate descent
+                k = iters%self._n_features
+                # update the coeff
+                self._coeff[k] = self._calculate_k_coeff(X, y, k)
+                # calculate the cost
+                current_cost = self._cost(self._coeff)
+                # store the current results if it is better than the stored best            
+                self._store_best_results(current_cost)       
+                print(iters, current_cost, np.linalg.norm(self._gradient(self._coeff)))
             
+        elif self.method == 'subgradient_descent':
             
+            while not self._should_stop(self._gradient(self._coeff), iters):
+                iters += 1
+            
+                # update the coeff
+                self._calculate_coeff(self.step_size, self._gradient(self._coeff))
+                current_cost = self._cost(self._coeff)
+            
+                # store the current results if it is better than the stored best            
+                self._store_best_results(current_cost)
+                print(iters, self._best_cost, np.linalg.norm(self._gradient(self._coeff)))
+        
+        # save the total number of iteration
+        self._n_iter = iters
+        return self
+    
 if __name__ == "__main__":
     import pandas as pd
     
@@ -337,22 +366,22 @@ if __name__ == "__main__":
                                                         test_size=0.33,
                                                         random_state=0)
     
-    #net1 = WEN(step_size = 1e-3, max_iter = 5000, random_state=0)
-    #net1.fit(X_train, y_train)
+    from sklearn.linear_model import LinearRegression
+
+    # calculate the weight
+    reg = LinearRegression()
+    reg.fit(X_train, y_train)
+    y_predict_reg = reg.predict(X_train)
+    weight = np.diag(1/(y_train - y_predict_reg)**2)
     
-    #print(net1.predict(X_train) - y_train)
+    net1 = WEN(tol = 1e-3, step_size = 5e-4, max_iter = 5000, random_state=0,
+               fit_intercept=True, method = 'subgradient_descent')
     
-    from sklearn.model_selection import GridSearchCV
+    net1.fit(X_train, y_train)
     
-    tuned_params = {'l1': [.2,.4,.6, .8, 1], 'l2': [.2, .4, .6, .8, 1]}
+    print(net1._best_cost, net1._best_coeff)
+
     
-    gs = GridSearchCV(WEN(), tuned_params)
     
-    gs.fit(X_train, y_train)
     
-    gs.best_params_
-    
-    #from sklearn.utils.estimator_checks import check_estimator
-    
-    #check_estimator(WEN)
         
